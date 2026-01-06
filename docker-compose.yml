@@ -1,0 +1,40 @@
+version: "3.8"
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    restart: unless-stopped
+
+  springboot:
+    image: memory-backend:latest    # ← Ya construida
+    container_name: memory-backend
+    ports:
+      - "8080:8080"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "3000:8080"
+    environment:
+      - WEBUI_SECRET_KEY=tu-clave-secreta
+    volumes:
+      - openwebui:/app/backend/data
+    depends_on:
+      - springboot
+    restart: unless-stopped
+
+volumes:
+  ollama-data:
+  openwebui:
