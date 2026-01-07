@@ -59,7 +59,7 @@ public class ChatService {
 
     private String buildOllamaPayload(List<Message> history, String currentMessage) {
         StringBuilder sb = new StringBuilder();
-        sb.append("{\"model\": \"phi3:3.8b\", \"messages\": [");  // Modelo ligero
+        sb.append("{\"model\": \"llama3.1:8b\", \"messages\": [");  // Modelo ligero
 
         // Historial cronológico
         for (int i = 0; i < history.size(); i++) {

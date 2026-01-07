@@ -57,4 +57,18 @@ public class ChatController {
         return ResponseEntity.ok(response);
     }
 
+    // En ChatController.java
+    @GetMapping("/v1/models")
+    public ResponseEntity<Map<String, Object>> getModels() {
+        return ResponseEntity.ok(Map.of(
+                "object", "list",
+                "data", List.of(Map.of(
+                        "id", "memory-model",
+                        "object", "model",
+                        "created", System.currentTimeMillis(),
+                        "owned_by", "mareliart"
+                ))
+        ));
+    }
+
 }
