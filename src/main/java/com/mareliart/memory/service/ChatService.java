@@ -4,19 +4,14 @@ import com.mareliart.memory.model.dto.ChatRequestDTO;
 import com.mareliart.memory.model.entities.Message;
 import com.mareliart.memory.model.enums.Role;
 import com.mareliart.memory.repository.MessageRepository;
-import jakarta.validation.constraints.NotBlank;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-
-import static org.apache.logging.log4j.util.StringBuilders.escapeJson;
 
 @Service
 public class ChatService {
@@ -35,16 +30,19 @@ public class ChatService {
 
     public String chat(ChatRequestDTO request) {
         String userMessage = request.message();
+
         // 1. Guardar mensaje del usuario
         Message userMsg = new Message(request.sessionId(), Role.USER, userMessage);
         messageRepository.save(userMsg);
-        // 2. Recuperar historial reciente (últimos 10 mensajes)
+
+        // 2. Recuperar historial reciente (últimos 8 mensajes)
         List<Message> history = messageRepository
                 .findBySessionIdOrderByCreatedAtDesc(request.sessionId());
 
-        /// Tomar solo los más recientes y ordenar cronológicamente
+        // Tomar últimos 8 y ordenar cronológicamente (antiguo → reciente)
         int historySize = Math.min(8, history.size());
         List<Message> recentHistory = history.subList(0, historySize);
+        Collections.reverse(recentHistory);  // ✅ Más importante: ANTIQUO → RECIENTE
 
         // 3. Construir payload para Ollama
         String ollamaPayload = buildOllamaPayload(recentHistory, userMessage);
@@ -61,9 +59,9 @@ public class ChatService {
 
     private String buildOllamaPayload(List<Message> history, String currentMessage) {
         StringBuilder sb = new StringBuilder();
-        sb.append("{\"model\": \"llama3.2:3b\", \"messages\": [");
+        sb.append("{\"model\": \"phi3:3.8b\", \"messages\": [");  // Modelo ligero
 
-        // Historial (más antiguo primero)
+        // Historial cronológico
         for (int i = 0; i < history.size(); i++) {
             if (i > 0) sb.append(",");
             Message msg = history.get(i);
