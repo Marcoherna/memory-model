@@ -1,67 +1,94 @@
 package com.mareliart.memory.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mareliart.memory.model.dto.ChatRequestDTO;
 import com.mareliart.memory.model.entities.Message;
 import com.mareliart.memory.model.enums.Role;
 import com.mareliart.memory.repository.MessageRepository;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 
 @Service
 public class ChatService {
     private final MessageRepository messageRepository;
-    private final RestTemplate restTemplate;
-    private final String ollamaUrl;
+    private final WebClient webClient;
+    private final ObjectMapper objectMapper;
 
     public ChatService(
             MessageRepository messageRepository,
-            @Value("${ollama.url:http://localhost:11434}") String ollamaUrl
+            @Value("${ollama.url:http://localhost:11434}") String ollamaUrl,
+            WebClient.Builder webClientBuilder,
+            ObjectMapper objectMapper
     ) {
         this.messageRepository = messageRepository;
-        this.restTemplate = new RestTemplate();
-        this.ollamaUrl = ollamaUrl;
+        this.webClient = webClientBuilder.baseUrl(ollamaUrl).build();
+        this.objectMapper = objectMapper;
     }
 
+    // Método original (para compatibilidad si se requiere)
     public String chat(ChatRequestDTO request) {
-        String userMessage = request.message();
+        // Implementación simplificada o lanzar excepción si ya no se usa
+        return "Usa el método con streaming";
+    }
 
-        // 1. Guardar mensaje del usuario
-        Message userMsg = new Message(request.sessionId(), Role.USER, userMessage);
+    // --- NUEVO MÉTODO CON STREAMING ---
+    public Flux<String> chatStream(String sessionId, String userMessage) {
+        // 1. Guardar mensaje del usuario (Igual que antes)
+        Message userMsg = new Message(sessionId, Role.USER, userMessage);
         messageRepository.save(userMsg);
 
-        // 2. Recuperar historial reciente (últimos 8 mensajes)
-        List<Message> history = messageRepository
-                .findBySessionIdOrderByCreatedAtDesc(request.sessionId());
-
-        // Tomar últimos 8 y ordenar cronológicamente (antiguo → reciente)
+        // 2. Historial (Igual que antes)
+        List<Message> history = messageRepository.findBySessionIdOrderByCreatedAtDesc(sessionId);
         int historySize = Math.min(8, history.size());
         List<Message> recentHistory = history.subList(0, historySize);
-        Collections.reverse(recentHistory);  // ✅ Más importante: ANTIQUO → RECIENTE
+        Collections.reverse(recentHistory);
 
-        // 3. Construir payload para Ollama
-        String ollamaPayload = buildOllamaPayload(recentHistory, userMessage);
+        // 3. Payload para Ollama con "stream": true
+        String payload = buildOllamaPayload(recentHistory, userMessage);
 
-        // 4. Llamar a Ollama
-        String assistantResponse = callOllama(ollamaPayload);
+        // Variable para acumular la respuesta completa (para la BD)
+        StringBuilder fullResponseAccumulator = new StringBuilder();
 
-        // 5. Guardar respuesta del modelo
-        Message assistantMsg = new Message(request.sessionId(), Role.ASSISTANT, assistantResponse);
-        messageRepository.save(assistantMsg);
+        // 4. Llamada Reactiva
+        return webClient.post()
+                .uri("/api/chat")
+                .bodyValue(payload)
+                .retrieve()
+                .bodyToFlux(String.class) // Recibimos el stream JSON de Ollama
+                .map(this::extractContentFromOllamaChunk) // Extraemos solo el texto
+                .filter(content -> !content.isEmpty())    // Ignoramos vacíos
+                .doOnNext(fullResponseAccumulator::append) // Acumulamos en memoria
+                .doOnComplete(() -> {
+                    // 5. ¡MAGIA! Guardamos en BD solo al terminar el stream
+                    Message assistantMsg = new Message(sessionId, Role.ASSISTANT, fullResponseAccumulator.toString());
+                    messageRepository.save(assistantMsg);
+                })
+                .doOnError(e -> System.err.println("Error en stream: " + e.getMessage()));
+    }
 
-        return assistantResponse;
+    private String extractContentFromOllamaChunk(String jsonChunk) {
+        try {
+            JsonNode root = objectMapper.readTree(jsonChunk);
+            if (root.has("message") && root.get("message").has("content")) {
+                return root.get("message").get("content").asText();
+            }
+            return "";
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private String buildOllamaPayload(List<Message> history, String currentMessage) {
         StringBuilder sb = new StringBuilder();
-        sb.append("{\"model\": \"llama3.1:8b\", \"messages\": [");  // Modelo ligero
+        // NOTA: Cambiamos "stream": false a true
+        sb.append("{\"model\": \"phi3:3.8b\", \"messages\": [");
 
-        // Historial cronológico
         for (int i = 0; i < history.size(); i++) {
             if (i > 0) sb.append(",");
             Message msg = history.get(i);
@@ -69,31 +96,10 @@ public class ChatService {
                     .append("\",\"content\":\"").append(escapeJson(msg.getContent())).append("\"}");
         }
 
-        // Mensaje actual del usuario
         sb.append(",{\"role\":\"user\",\"content\":\"").append(escapeJson(currentMessage)).append("\"}");
-        sb.append("], \"stream\": false}");
+        sb.append("], \"stream\": true}"); // <--- CAMBIO IMPORTANTE
 
         return sb.toString();
-    }
-
-    private String callOllama(String payload) {
-        try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-
-            HttpEntity<String> entity = new HttpEntity<>(payload, headers);
-            ResponseEntity<Map> response = restTemplate.postForEntity(
-                    ollamaUrl + "/api/chat", entity, Map.class);
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> body = response.getBody();
-            @SuppressWarnings("unchecked")
-            Map<String, String> message = (Map<String, String>) body.get("message");
-
-            return message != null ? message.get("content") : "No response from model";
-        } catch (Exception e) {
-            return "Error conectando con Ollama: " + e.getMessage();
-        }
     }
 
     private String escapeJson(String input) {
